@@ -1,0 +1,2453 @@
+---
+title: "AP test application"
+format: html
+editor: visual
+author: 'Fred Song'
+date: "2023-08-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Section 1 Policy Introductions
+
+## Section 1.1 Running Traditional UR
+
+### Section 1.1.1: Two-arm Uniform Random Sampling
+
+```{r UR, message = FALSE}
+# todo add induced-wald-z test: it also goes with the distribution
+#' UR-Uniform Random Sampling Method - Comparison of Allocation Probability Test vs. Traditional Wald Z test
+#'
+#' Runs UR algorithm in two-armed case, for n batches to calculate an AP Test statistic for each arm
+
+#' @param pa - actual prior probability of controlled group arm a (typically unknown in practice)
+#' @param pb - actual prior probability of experimental arm b (typically unknown in practice)
+#' @param n - total number of trials in one simulation 
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#' @return vector containing WaldScore[n], reward[n], AP, and APT: the final Wald-Z-score, reward, allocation probability throughout the trial, and AP Test statistics for both arms, 
+
+UR <- function(pa, pb, n, burnin = 1, batch = 2) {
+
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_a_successes <- c(0)
+  arm_a_failures <- c(0)
+  arm_b_successes <- c(0)
+  arm_b_failures <- c(0)
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_a_s <- 0
+  arm_a_f <- 0
+  arm_b_s <- 0
+  arm_b_f <- 0
+
+  # History that tracks if there was success in either arm for each trial (Variable not used in final results)
+  # ex. [1,0,1,1,0,1] 1 indicates success for either arm, 0 indicates failure for both arms
+  abl <- c()
+  APT = 0 # AP Test statistic over the time, here we should be expecting this to be around 50% of the sample size n.
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  # note: would be the same here burnin and the actual policy as the policy we are simulating is UR, just for style keeping :) (sorry OCD)
+  for (i in 1:burnin) {
+
+    draw_a <- runif(1) # Random probability of arm a being chosen
+    draw_b <- runif(1) # Random probability of arm b being chosen
+
+    # CASE 1: Arm a is chosen
+    if (draw_a > draw_b) {
+      # Arm a was successful  
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } 
+      # Arm a was not successful
+      else {       
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    }
+
+    # CASE 2: Arm b is chosen
+    else {
+      # Arm b was successful
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 # update arm b success count
+      }
+      # Arm b was not successful
+      else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 # update arm b failure count
+      }
+    }
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f 
+    }
+  
+  # ---------- UR Period: use Uniform Random (UR) sampling only ----------
+  
+  
+  for (i in (burnin+1):n) {
+    
+    m = i %% batch 
+
+    draw_a <- runif(1) # Random probability of arm a being chosen
+    draw_b <- runif(1) # Random probability of arm b being chosen
+
+    # CASE 1: Arm a is chosen
+    if (draw_a > draw_b) {
+      # Arm a was successful  
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } 
+      # Arm a was not successful
+      else {       
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    }
+
+    # CASE 2: Arm b is chosen
+    else {
+      if(m == 0){
+        APT = APT + 1
+      }
+      # Arm b was successful
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 # update arm b success count
+      }
+      # Arm b was not successful
+      else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 # update arm b failure count
+      }
+    }
+
+    # Tracking the build-up of total number of successes, failures, for arm a & b
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f 
+  }
+  na <- arm_a_successes + arm_a_failures
+  nb <- arm_b_successes + arm_b_failures
+  AP <- nb/(na+nb) # Tracking of the changes of allocation probability over the time, it should stabilize at a 50% when sample size gets large enough
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  pa_est <- arm_a_successes / na
+  pb_est <- arm_b_successes / nb
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  p_hat <- (arm_a_successes + arm_b_successes)/(na + nb)
+  WaldScore <- (pb_est - pa_est) / sqrt(p_hat*(1-p_hat)*(1/na + 1/nb))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- (na[n] * pa + nb[n] * pb) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- (arm_a_successes[n] + arm_b_successes[n])/n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  #return(c(WaldScore[n], expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = c(arm_a_successes[n], arm_b_successes[n]),
+              arm_failures = c(arm_a_failures[n], arm_b_failures[n]),
+              APT = APT))
+}
+```
+
+### Section 1.1.2: multi-arm Uniform Random
+
+```{r}
+#' UR Sampling Method - Comparison of Allocation Probability Test vs. Traditional Wald Z test
+#'
+#' Runs UR algorithm in two-armed case, for n batches to calculate an AP Test statistic for each arm
+
+#' @param priors this is a list c() containing the success rate of each arm c(pa, pb, pc,...)
+#' @param n - total number of trials in one simulation 
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#'
+#' @return vector containing WaldScore[n], reward[n], AP, and APT: the final Wald-Z-score, reward, allocation probability throughout the trial, and AP Test statistics for both arms, 
+# or per say the CARA-FLGI method
+
+UR_multiarm <- function(priors, n, burnin = 1, batch = 2) {
+  # for an n arm setting, let's calculate the number of arms first
+  num_arms <- length(priors)
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_successes <- array(0, dim=c(num_arms, n))
+  arm_failures <- array(0, dim=c(num_arms, n))
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_s <- rep(0, num_arms)
+  arm_f <- rep(0, num_arms)
+
+  # still keeping track of the allocation probability test statistcs under a multi-arm case
+  APT = 0
+  
+  # keep the same abl list for record keeping, to see how many successes and failures along the way
+  abl <- c()
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  
+  for (i in 1:burnin) {
+
+    draw_arms <- runif(num_arms) # randomly drawing one arm out of all arms
+    arm_chosen <- which.max(draw_arms) # settle down which arm to pick
+    
+    if(runif(1) < priors[arm_chosen]){
+      abl[i] <- 1
+      arm_s[arm_chosen] <- arm_s[arm_chosen] + 1 # update arm a success count
+    }
+    else{
+      abl[i] <- 0
+      arm_f[arm_chosen] <- arm_f[arm_chosen] + 1 # update arm a failure count
+    }
+    
+    # Tracking the build-up of total number of successes, failures, for all the arms:
+    arm_successes[ , i] <- arm_s
+    arm_failures[ , i] <- arm_f
+  }
+  
+  # ---------- AFTER BURNIN PERIOD: Use TS or UR depending on difference between posterior probabilities ----------
+  
+  for (i in (burnin + 1):n) {
+
+    # Posterior probability updates happen by batch size (whenever m becomes 0, larger batch size -> slower updates)
+    m = i %% batch 
+    
+    # Draw from Beta(alpha, beta) distribution, using only the current success & failure counts 
+    # alpha = current successes, beta = current failures of each arm
+
+    # CASE 1: Posterior probability of arms a & b is updated
+    if (m == 0) {
+      draw_arms <- runif(num_arms)
+      # purely uniform sampling
+      # assuming the last arm in the prior list is always the experimental arm and we are to determine if it is a superior treatment compare to all other arms
+      if(all(draw_arms[num_arms] > draw_arms[1:num_arms-1])){
+        APT = APT + 1
+      }
+    }
+    
+    # CASE 2: Posterior probability of arms a & b is not updated
+    else {
+      draw_arms <- runif(num_arms)
+      # purely uniform random sampling
+    }
+    
+    # settle the chosen arm:
+    arm_chosen <- which.max(draw_arms)  # Settle down which arm to pick based on the highest sampled posterior room
+    
+    # Update arms history (abl), successes, and failures
+    if (runif(1) < priors[arm_chosen]) {
+      abl[i] <- 1
+      arm_s[arm_chosen] <- arm_s[arm_chosen] + 1  # Update success count for chosen arm
+    } else {
+      abl[i] <- 0
+      arm_f[arm_chosen] <- arm_f[arm_chosen] + 1  # Update failure count for chosen arm
+    }  
+    
+    # Tracking the build-up of total number of successes, failures, for all arms, adding onto successes and failures from burnin period
+    arm_successes[, i] <- arm_s
+    arm_failures[, i] <- arm_f
+  }
+
+  # List: complete history of number of times arms a & b were chosen (final index, total number of times chosen for each)
+  n_total <- arm_successes + arm_failures
+  AP <- n_total[num_arms, ]/colSums(n_total)
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  p_est <- arm_successes / n_total
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  # we are calculating the Z test for whether or not the last arm is significantly better than the average of the other arms
+  # Get the proportions of successes for the last arm and the other arms
+  p_last_arm <- p_est[num_arms, n]
+  
+  
+  # Get the sample sizes for the last arm and the other arms
+  n_last_arm <- n_total[num_arms, n]
+  n_other_arms <- n_total[-num_arms, n]
+  
+  # Calculate the weighted average success rate for the other arms
+  p_other_arms <- sum(n_other_arms * p_est[-num_arms, n]) / sum(n_other_arms)
+  
+  # Calculate the pooled proportion of successes
+  p_pooled <- (n_last_arm * p_last_arm + sum(n_other_arms) * p_other_arms) / (n_last_arm + sum(n_other_arms))
+  
+  # Calculate the Z-score
+  WaldScore <- (p_last_arm - p_other_arms) / sqrt(p_pooled * (1 - p_pooled) * (1/n_last_arm + 1/sum(n_other_arms)))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- sum(n_total[, n] * priors) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- sum(arm_successes[, n]) / n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  # return(c(WaldScore, expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = arm_successes[,n],
+              arm_failures = arm_failures[,n],
+              APT = APT))
+}
+```
+
+## Section 1.2 Running Traditional TS
+
+### Section 1.2.1: 2-arm Traditional TS
+
+```{r}
+#' TS-Thompson Sampling Method - Comparison of Allocation Probability Test vs. Traditional Wald Z test
+#'
+#' Runs TS algorithm in two-armed case, for n batches to calculate an AP Test statistic for each arm
+
+#' @param pa - actual prior probability of controlled group arm a (typically unknown in practice)
+#' @param pb - actual prior probability of experimental arm b (typically unknown in practice)
+#' @param n - total number of trials in one simulation 
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#'
+#' @return vector containing WaldScore[n], reward[n], AP, and APT: the final Wald-Z-score, reward, allocation probability throughout the trial, and AP Test statistics for both arms, 
+# or per say the CARA-FLGI method
+
+TS <- function(pa, pb, n, burnin = 1, batch = 2) {
+
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_a_successes <- c(0)
+  arm_a_failures <- c(0)
+  arm_b_successes <- c(0)
+  arm_b_failures <- c(0)
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_a_s <- 0
+  arm_a_f <- 0
+  arm_b_s <- 0
+  arm_b_f <- 0
+
+  # History that tracks if there was success in either arm for each trial (Variable not used in final results)
+  # ex. [1,0,1,1,0,1] 1 indicates success for either arm, 0 indicates failure for both arms
+  abl <- c()
+ 
+  APT = 0
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  
+  for (i in 1:burnin) {
+
+    draw_a <- runif(1) # Random probability of arm a being chosen
+    draw_b <- runif(1) # Random probability of arm b being chosen
+
+    # CASE 1: Arm a is chosen
+    if (draw_a > draw_b) {
+      # Arm a was successful  
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } 
+      # Arm a was not successful
+      else {       
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    }
+
+    # CASE 2: Arm b is chosen
+    else {
+      # Arm b was successful
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 # update arm b success count
+      }
+      # Arm b was not successful
+      else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 # update arm b failure count
+      }
+    }
+
+    # Tracking the build-up of total number of successes, failures, for arm a & b
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f 
+  }
+  
+  # ---------- AFTER BURNIN PERIOD: Use TS or UR depending on difference between posterior probabilities ----------
+  
+  for (i in (burnin + 1):n) {
+
+    # Posterior probability updates happen by batch size (whenever m becomes 0, larger batch size -> slower updates)
+    m = i %% batch 
+    
+    # Draw from Beta(alpha, beta) distribution, using only the current success & failure counts 
+    # alpha = current successes, beta = current failures of each arm
+
+    # CASE 1: Posterior probability of arms a & b is updated
+    if (m == 0) {
+      draw_a <-
+        rbeta(1, arm_a_successes[i - 1] + 1, arm_a_failures[i - 1] + 1) 
+      draw_b <-
+        rbeta(1, arm_b_successes[i - 1] + 1, arm_b_failures[i - 1] + 1) 
+      if(draw_b > draw_a){
+        APT = APT + 1
+      }
+    }
+    
+    # CASE 2: Posterior probability of arms a & b is not updated
+    else {
+      draw_a <-
+        rbeta(1, arm_a_successes[i - m] + 1, arm_a_failures[i - m] + 1) 
+      draw_b <-
+        rbeta(1, arm_b_successes[i - m] + 1, arm_b_failures[i - m] + 1)
+        
+    # Using index [i - m] shows we are using the posterior probabilities from the previous batch, and not our most current success/failure counts
+    }
+
+    # Update arm a & b history (abl), successes, and failures
+    if (draw_a > draw_b) {
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } else {
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    } else{
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 #update arm b success count
+      } else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 #update arm b failure count
+      }
+    }  
+    
+    # Tracking the build-up of total number of successes, failures, for arm a & b, adding onto successes and failures from burnin period
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f
+  }
+
+  # List: complete history of number of times arms a & b were chosen (final index, total number of times chosen for each)
+  na <- arm_a_successes + arm_a_failures
+  nb <- arm_b_successes + arm_b_failures
+  AP <- nb/(na+nb)
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  pa_est <- arm_a_successes / na
+  pb_est <- arm_b_successes / nb
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  # WaldScore <- (pb_est - pa_est) / sqrt(pa_est * (1 - pa_est) / na + pb_est * (1 - pb_est) / nb)
+  p_hat <- (arm_a_successes + arm_b_successes)/(na + nb)
+  WaldScore <- (pb_est - pa_est) / sqrt(p_hat*(1-p_hat)*(1/na + 1/nb))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- (na[n] * pa + nb[n] * pb) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- (arm_a_successes[n] + arm_b_successes[n])/n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  #return(c(WaldScore[n], expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = c(arm_a_successes[n], arm_b_successes[n]),
+              arm_failures = c(arm_a_failures[n], arm_b_failures[n]),
+              APT = APT))
+}
+
+```
+
+### Section 1.2.2: multi-arm Traditional TS
+
+```{r}
+#' TS-Thompson Sampling Method - Comparison of Allocation Probability Test vs. Traditional Wald Z test
+#'
+#' Runs TS algorithm in two-armed case, for n batches to calculate an AP Test statistic for each arm
+
+#' @param priors this is a list c() containing the success rate of each arm c(pa, pb, pc,...)
+#' @param n - total number of trials in one simulation 
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#'
+#' @return vector containing WaldScore[n], reward[n], AP, and APT: the final Wald-Z-score, reward, allocation probability throughout the trial, and AP Test statistics for both arms, 
+# or per say the CARA-FLGI method
+
+TS_multiarm <- function(priors, n, burnin = 1, batch = 2) {
+  # for an n arm setting, let's calculate the number of arms first
+  num_arms <- length(priors)
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_successes <- array(0, dim=c(num_arms, n))
+  arm_failures <- array(0, dim=c(num_arms, n))
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_s <- rep(0, num_arms)
+  arm_f <- rep(0, num_arms)
+
+  # still keeping track of the allocation probability test statistcs under a multi-arm case
+  APT = 0
+  
+  # keep the same abl list for record keeping, to see how many successes and failures along the way
+  abl <- c()
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  
+  for (i in 1:burnin) {
+
+    draw_arms <- runif(num_arms) # randomly drawing one arm out of all arms
+    arm_chosen <- which.max(draw_arms) # settle down which arm to pick
+    
+    if(runif(1) < priors[arm_chosen]){
+      abl[i] <- 1
+      arm_s[arm_chosen] <- arm_s[arm_chosen] + 1 # update arm a success count
+    }
+    else{
+      abl[i] <- 0
+      arm_f[arm_chosen] <- arm_f[arm_chosen] + 1 # update arm a failure count
+    }
+    
+    # Tracking the build-up of total number of successes, failures, for all the arms:
+    arm_successes[ , i] <- arm_s
+    arm_failures[ , i] <- arm_f
+  }
+  
+  # ---------- AFTER BURNIN PERIOD: Use TS or UR depending on difference between posterior probabilities ----------
+  
+  for (i in (burnin + 1):n) {
+
+    # Posterior probability updates happen by batch size (whenever m becomes 0, larger batch size -> slower updates)
+    m = i %% batch 
+    
+    # Draw from Beta(alpha, beta) distribution, using only the current success & failure counts 
+    # alpha = current successes, beta = current failures of each arm
+
+    # CASE 1: Posterior probability of arms a & b is updated
+    if (m == 0) {
+      draw_arms <- rbeta(num_arms, arm_successes[, i - 1] + 1, arm_failures[, i - 1] + 1)
+      # assuming the last arm in the prior list is always the experimental arm and we are to determine if it is a superior treatment compare to all other arms
+      if(all(draw_arms[num_arms] > draw_arms[1:num_arms-1])){
+        APT = APT + 1
+      }
+    }
+    
+    # CASE 2: Posterior probability of arms a & b is not updated
+    else {
+      draw_arms <- rbeta(num_arms, arm_successes[, i - m] + 1, arm_failures[, i - m] + 1)
+        
+    # Using index [i - m] shows we are using the posterior probabilities from the previous batch, and not our most current success/failure counts
+    }
+    
+    # settle the chosen arm:
+    arm_chosen <- which.max(draw_arms)  # Settle down which arm to pick based on the highest sampled posterior room
+    
+    # Update arms history (abl), successes, and failures
+    if (runif(1) < priors[arm_chosen]) {
+      abl[i] <- 1
+      arm_s[arm_chosen] <- arm_s[arm_chosen] + 1  # Update success count for chosen arm
+    } else {
+      abl[i] <- 0
+      arm_f[arm_chosen] <- arm_f[arm_chosen] + 1  # Update failure count for chosen arm
+    }  
+    
+    # Tracking the build-up of total number of successes, failures, for all arms, adding onto successes and failures from burnin period
+    arm_successes[, i] <- arm_s
+    arm_failures[, i] <- arm_f
+  }
+
+  # List: complete history of number of times arms a & b were chosen (final index, total number of times chosen for each)
+  n_total <- arm_successes + arm_failures
+  AP <- n_total[num_arms, ]/colSums(n_total)
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  p_est <- arm_successes / n_total
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  # we are calculating the Z test for whether or not the last arm is significantly better than the average of the other arms
+  # Get the proportions of successes for the last arm and the other arms
+  p_last_arm <- p_est[num_arms, n]
+  
+  
+  # Get the sample sizes for the last arm and the other arms
+  n_last_arm <- n_total[num_arms, n]
+  n_other_arms <- n_total[-num_arms, n]
+  
+  # Calculate the weighted average success rate for the other arms
+  p_other_arms <- sum(n_other_arms * p_est[-num_arms, n]) / sum(n_other_arms)
+  
+  # Calculate the pooled proportion of successes
+  p_pooled <- (n_last_arm * p_last_arm + sum(n_other_arms) * p_other_arms) / (n_last_arm + sum(n_other_arms))
+  
+  # Calculate the Z-score
+  WaldScore <- (p_last_arm - p_other_arms) / sqrt(p_pooled * (1 - p_pooled) * (1/n_last_arm + 1/sum(n_other_arms)))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- sum(n_total[, n] * priors) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- sum(arm_successes[, n]) / n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  #return(c(WaldScore, expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = arm_successes[,n],
+              arm_failures = arm_failures[,n],
+              APT = APT))
+}
+```
+
+## Section 1.3 Running Epsilon TS
+
+```{r}
+#' Epsilon-TS-Thompson Sampling Method - Comparison of Allocation Probability Test vs. Traditional Wald Z test
+#'
+#' Runs epsilon TS algorithm in two-armed case, for n batches to calculate an AP Test statistic for each arm
+
+#' @param pa - actual prior probability of controlled group arm a (typically unknown in practice)
+#' @param pb - actual prior probability of experimental arm b (typically unknown in practice)
+#' @param n - total number of trials in one simulation 
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#' @param epsilon - this is the epsilon (or proportion) we defined previous to simulations at a certain level for UR sampling within the simulations, by default let's make it 0.1 i.e. 10% uniform random exploration
+#' @return vector containing WaldScore[n], reward[n], AP, and APT: the final Wald-Z-score, reward, allocation probability throughout the trial, and AP Test statistics for both arms, 
+# or per say the CARA-FLGI method
+TS_epsilon <- function(pa, pb, n, burnin = 1, batch = 2, epsilon = 0.1) {
+  
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_a_successes <- c(0)
+  arm_a_failures <- c(0)
+  arm_b_successes <- c(0)
+  arm_b_failures <- c(0)
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_a_s <- 0
+  arm_a_f <- 0
+  arm_b_s <- 0
+  arm_b_f <- 0
+
+  # History that tracks if there was success in either arm for each trial (Variable not used in final results)
+  # ex. [1,0,1,1,0,1] 1 indicates success for either arm, 0 indicates failure for both arms
+  abl <- c()
+ 
+  APT = 0 # AP Test statistic
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  
+  for (i in 1:burnin) {
+
+    draw_a <- runif(1) # Random probability of arm a being chosen
+    draw_b <- runif(1) # Random probability of arm b being chosen
+
+    # CASE 1: Arm a is chosen
+    if (draw_a > draw_b) {
+      # Arm a was successful  
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } 
+      # Arm a was not successful
+      else {       
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    }
+
+    # CASE 2: Arm b is chosen
+    else {
+      # Arm b was successful
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 # update arm b success count
+      }
+      # Arm b was not successful
+      else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 # update arm b failure count
+      }
+    }
+
+    # Tracking the build-up of total number of successes, failures, for arm a & b
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f 
+  }
+  
+  # ---------- AFTER BURNIN PERIOD: Use TS or UR depending on difference between posterior probabilities ----------
+  
+  for (i in (burnin + 1):n) {
+
+    # Posterior probability updates happen by batch size (whenever m becomes 0, larger batch size -> slower updates)
+    m = i %% batch 
+    
+    # Draw from Beta(alpha, beta) distribution, using only the current success & failure counts 
+    # alpha = current successes, beta = current failures of each arm
+
+    # Use UR: If difference between posterior probabilities of arms is less than threshold value (expected difference in reward between arms)
+    if (runif(1) < epsilon) {
+      draw_a <- runif(1) # Random probability of arm a being chosen
+      draw_b <- runif(1) # Random probability of arm b being chosen
+    } 
+    
+    # Use TS: If difference between posterior probabilities of arms crosses threshold value (expected difference in reward between arms)
+    else {
+      # CASE 1: Posterior probability of arms a & b is updated
+      if (m == 0) {
+        draw_a <-
+          rbeta(1, arm_a_successes[i - 1] + 1, arm_a_failures[i - 1] + 1)
+        draw_b <-
+          rbeta(1, arm_b_successes[i - 1] + 1, arm_b_failures[i - 1] + 1)
+        if (draw_b > draw_a){
+          APT = APT +1
+        }
+      }
+      # CASE 2: Posterior probability of arms a & b is not updated
+      else {
+        draw_a <-
+          rbeta(1, arm_a_successes[i - m] + 1, arm_a_failures[i - m] + 1)
+        draw_b <-
+          rbeta(1, arm_b_successes[i - m] + 1, arm_b_failures[i - m] + 1)
+      }
+    }
+
+
+
+    # Update arm a & b history (abl), successes, and failures
+    if (draw_a > draw_b) {
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } else {
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    } else{
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 #update arm b success count
+      } else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 #update arm b failure count
+      }
+    }  
+    
+    # Tracking the build-up of total number of successes, failures, for arm a & b, adding onto successes and failures from burnin period
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f
+  }
+
+  # List: complete history of number of times arms a & b were chosen (final index, total number of times chosen for each)
+  na <- arm_a_successes + arm_a_failures
+  nb <- arm_b_successes + arm_b_failures
+  AP <- nb/(na+nb)
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  pa_est <- arm_a_successes / na
+  pb_est <- arm_b_successes / nb
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  #WaldScore <- (pb_est - pa_est) / sqrt(pa_est * (1 - pa_est) / na + pb_est * (1 - pb_est) / nb)
+  p_hat <- (arm_a_successes + arm_b_successes)/(na + nb)
+  WaldScore <- (pb_est - pa_est) / sqrt(p_hat*(1-p_hat)*(1/na + 1/nb))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- (na[n] * pa + nb[n] * pb) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- (arm_a_successes[n] + arm_b_successes[n])/n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  #return(c(WaldScore[n], expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = c(arm_a_successes[n], arm_b_successes[n]),
+              arm_failures = c(arm_a_failures[n], arm_b_failures[n]),
+              APT = APT))
+}
+```
+
+## Section 1.4 Running TS-PostDiff (Code adapted from Tong)
+
+```{r PostDiff, echo = TRUE}
+#' TS-PostDiff - Allocation Probability Test
+#'
+#' Runs TS-PostDiff algorithm in two-armed case, for n batches, with given batch size and BURNIN period, to calculate an AP Test statistic for each arm
+
+#' @param pa - actual prior probability of arm a (typically unknown in practice)
+#' @param pb - actual prior probability of arm b (typically unknown in practice)
+#' @param n - total number of trials in one simulation 
+#' @param c - threshold of difference in expected reward between the two arms, by default it is 0.1
+#' @param batch - number of trials before posterior probability is updated, but in UR case it is sort of irrelevant, by default this is 2, i.e. update every 2 batches
+#' @param burnin - number of trials that run only Uniform Random (UR) sampling, before applying the UR algorithm for all remaining trials, and updating posterior probability every batch (using beta distribution), by default burin = 1, i.e. no burnin period
+#' @return vector containing WaldScore[n], reward[n], APT_1, APT_2: the final waldscore, reward, and AP Test statistics for both arms
+
+TSPDD <- function(pa, pb, n, burnin = 1, batch = 2, c = 0.1) {
+
+  # List: tracking successes and failures under each arm
+  # ex. [0,1,1,1,2,3,3,4,5,6], final index value indicates total number of successes/failures
+  arm_a_successes <- c(0)
+  arm_a_failures <- c(0)
+  arm_b_successes <- c(0)
+  arm_b_failures <- c(0)
+  
+  # List: tracking only the current number of successes and failures (Value changes for each iteration)
+  arm_a_s <- 0
+  arm_a_f <- 0
+  arm_b_s <- 0
+  arm_b_f <- 0
+
+  # History that tracks if there was success in either arm for each trial (Variable not used in final results)
+  # ex. [1,0,1,1,0,1] 1 indicates success for either arm, 0 indicates failure for both arms
+  abl <- c()
+ 
+  APT = 0 # AP Test statistic
+  
+  # ---------- BURNIN PERIOD: use Uniform Random (UR) sampling only ----------
+  
+  for (i in 1:burnin) {
+
+    draw_a <- runif(1) # Random probability of arm a being chosen
+    draw_b <- runif(1) # Random probability of arm b being chosen
+
+    # CASE 1: Arm a is chosen
+    if (draw_a > draw_b) {
+      # Arm a was successful  
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } 
+      # Arm a was not successful
+      else {       
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    }
+
+    # CASE 2: Arm b is chosen
+    else {
+      # Arm b was successful
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 # update arm b success count
+      }
+      # Arm b was not successful
+      else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 # update arm b failure count
+      }
+    }
+
+    # Tracking the build-up of total number of successes, failures, for arm a & b
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f 
+  }
+  
+  # ---------- AFTER BURNIN PERIOD: Use TS or UR depending on difference between posterior probabilities ----------
+  
+  for (i in (burnin + 1):n) {
+
+    # Posterior probability updates happen by batch size (whenever m becomes 0, larger batch size -> slower updates)
+    m = i %% batch 
+    
+    # Draw from Beta(alpha, beta) distribution, using only the current success & failure counts 
+    # alpha = current successes, beta = current failures of each arm
+    # Use UR: If difference between posterior probabilities of arms is less than threshold value (expected difference in reward between arms)
+    if (abs(draw_a - draw_b) < c) {
+      draw_a <- runif(1) # Random probability of arm a being chosen
+      draw_b <- runif(1) # Random probability of arm b being chosen
+    } 
+    
+    # Use TS: If difference between posterior probabilities of arms crosses threshold value (expected difference in reward between arms)
+    else {
+      # CASE 1: Posterior probability of arms a & b is updated
+      if (m == 0) {
+        draw_a <-
+          rbeta(1, arm_a_successes[i - 1] + 1, arm_a_failures[i - 1] + 1)
+        draw_b <-
+          rbeta(1, arm_b_successes[i - 1] + 1, arm_b_failures[i - 1] + 1)
+        if (draw_b > draw_a){
+          APT = APT + 1
+        }
+      }
+      # CASE 2: Posterior probability of arms a & b is not updated
+      else {
+        draw_a <-
+          rbeta(1, arm_a_successes[i - m] + 1, arm_a_failures[i - m] + 1)
+        draw_b <-
+          rbeta(1, arm_b_successes[i - m] + 1, arm_b_failures[i - m] + 1)
+      }
+    }
+
+    # Update arm a & b history (abl), successes, and failures
+    if (draw_a > draw_b) {
+      if (runif(1) < pa) {
+        abl[i] <- 1
+        arm_a_s <- arm_a_s + 1 # update arm a success count
+      } else {
+        abl[i] <- 0
+        arm_a_f <- arm_a_f + 1 # update arm a failure count
+      }
+    } else{
+      if (runif(1) < pb) {
+        abl[i] <- 1
+        arm_b_s <- arm_b_s + 1 #update arm b success count
+      } else {
+        abl[i] <- 0
+        arm_b_f <- arm_b_f + 1 #update arm b failure count
+      }
+    }  
+    
+    # Tracking the build-up of total number of successes, failures, for arm a & b, adding onto successes and failures from burnin period
+    arm_a_successes[i] <- arm_a_s
+    arm_a_failures[i] <- arm_a_f
+    arm_b_successes[i] <- arm_b_s
+    arm_b_failures[i] <- arm_b_f
+  }
+
+  # List: complete history of number of times arms a & b were chosen (final index, total number of times chosen for each)
+  na <- arm_a_successes + arm_a_failures
+  nb <- arm_b_successes + arm_b_failures
+
+  # List: complete history of estimated posterior probability updates, for arm a & b success (final index, final posterior probability for each)
+  pa_est <- arm_a_successes / na
+  pb_est <- arm_b_successes / nb
+  AP <- nb/(na+nb)
+
+  # Wald Score for confidence interval: for analyzing categorical data underlying chi-squared distribution vectors, instead of summation
+  #WaldScore <- (pb_est - pa_est) / sqrt(pa_est * (1 - pa_est) / na + pb_est * (1 - pb_est) / nb)
+  p_hat <- (arm_a_successes + arm_b_successes)/(na + nb)
+  WaldScore <- (pb_est - pa_est) / sqrt(p_hat*(1-p_hat)*(1/na + 1/nb))
+  
+  # List: our expected reward, from both arms (number of times chosen * posterior success probability, for each arm)
+  expected_reward <- (na[n] * pa + nb[n] * pb) / n
+  # Lists out the average expected reward for each individual trial (final index, final expected reward value)
+  actual_reward <- (arm_a_successes[n] + arm_b_successes[n])/n
+  
+  #return(list(WaldScore = WaldScore[n], reward = reward[n], AP = AP[n], APT = APT))
+  #return(c(WaldScore[n], expected_reward, actual_reward, AP[n], APT))
+  return(list(arm_successes = c(arm_a_successes[n], arm_b_successes[n]),
+              arm_failures = c(arm_a_failures[n], arm_b_failures[n]),
+              APT = APT))
+}
+```
+
+# Section 2: Finding Critical Value
+
+## Section 2.1 Finding Critical Values, Using Normal Assumption on Law of Large Numbers:
+
+```{r}
+#' Critical Value (Normal)
+#'
+#' Finds critical value using normal assumption on LLN
+#' @param APT - AP Test statistic (List of either APT_ban_UR/APT_w_UR results across different simulations)
+#' @param alpha - Customized significance level
+#' 
+#' @return generated critical value from normality assumption
+
+normal_cv <- function(APT, alpha) {
+  m <- mean(APT) 
+  v <- var(APT)
+  sd <- sqrt(v)
+  normal_rej <- qnorm(1 - alpha) #Rejection area defined (following normal distribution assumption)
+  cv <- normal_rej * sd + m
+  return(cv)
+}
+```
+
+## Section 2.2 Finding Critical Values, Using Empirical Approach
+
+```{r}
+#' Critical Value (Empirical)
+#'
+#' Finds critical value using empirical assumption on LLN
+#' @param APT - AP Test statistic (List of either APT_ban_UR/APT_w_UR results across different simulations)
+#' @param alpha - Customized significance level
+#' 
+#' @return generated critical value from empirical simulations
+
+empirical_cv <- function(APT, alpha) {
+  cdf = 0
+  i = 0 
+  # Repeatedly add the empirical probabilities of each [i] value until cdf reaches 1 - significance level
+  while (cdf <= 1- alpha) {
+    p_i <-sum(APT == i)/length(APT)
+    cdf <- sum(cdf, p_i)
+    i = i + 1
+  }
+  return(i - 1) 
+}
+```
+
+## Section 2.3 Replicating and rerun the simulations for B replications
+
+To achieve that, let us write a helper function to achieve on analyzing arm successes, arm failures, APT and priors to come out with test statistics:
+
+```{r}
+# it takes in a multi-dimenional priors could be two-arm, three-arm, and so on
+# it takes in the rejection alpha value, one tail.
+# takes in the corresponding list of successes for each arm, for e.g. c(10,15) means 10 successes for arm 1 and 15 successes for arm 2
+# takes in the corresponding list of failures for each arm, for e.g. c(20,35) means 20 failures for arm 1 and 35 failures for arm 2
+# APT is calculated from the sampling result of the policy, following the CARA-FLGI method
+analyzing_results <- function(alpha, priors, arm_successes, arm_failures, APT){
+  s <- length(priors) # calculate the dimension of the priors
+  n <- arm_successes + arm_failures # total number of samples in each arm
+  p_hat <- arm_successes/n # posterior probability estimated at the end of the trials
+  average_reward <- sum(arm_successes)/sum(n) # aaverage reward for the whole trial
+  expect_reward <- sum(priors*n)/sum(n) # expected reward given the prior success rate and the sample size for each arm 
+  AP <- n[s]/sum(n) # the allocation probability for the last arm (experimental arm) 
+  wald <- c()
+  for (i in 1: s-1){
+    wald[i] <- (p_hat[s] - p_hat[i])/sqrt(p_hat[s]*(1-p_hat[s])/(n[s]+0.01) + p_hat[i]*(1-p_hat[i])/(n[i]+0.01))
+  }
+  
+  reject <- ifelse(all(as.vector(na.omit(wald)) > qnorm(1-alpha)), 1, 0) # return 1 if the null hypothesis can be rejected, 0 otherwise
+  return(c(reject, expect_reward, average_reward, AP, APT))
+}
+```
+
+```{r}
+
+analyzing_results(0.05, c(0.05,0.4,0.5), c(0,20,30), c(0,20,15), 25)
+```
+
+```{r FPR, message = FALSE,echo=TRUE}
+library(tidyverse)
+# One output for each simulation, the four dimensions are waldscore, average reward, APT_ban_UR, and APT_w_UR
+# adding z biomarkers
+simulation_n_times <-
+  function(alpha, # rejection alpha
+           policy, # which policy to use, UR, TS, UR_multiarm, etc.
+           effect_size, # the difference between p2 - p1
+           n, # total sample size
+           B, # number of replication
+           burnin, # period of UR we set for running
+           batch, # number of samples in each batch before updates
+           multi_arm = FALSE, # number of arms in the treatment, if two arm by default it is FALSE
+           z = 1, # number of biomarker grops in tota, by default this is 1 (i.e. single group biomarker)
+           priors = rep(0.5, 3), # set a default priors for multi-arm case for prevention of error
+           ...) { # ... as in some of the parameters in other policies and multi_arm
+    if (multi_arm == FALSE) {
+      pa <- 0.4 # define the corresponding priors of the success rate centred and scaled at p1+p2 = 1
+      pb <- 0.4 + effect_size
+      results <- array(dim = c(B, 5)) # output a five dimensional arrage
+      # number of simulations
+      K <- n/batch # this is the number of blocks in the session
+      for (i in 1:B) {
+        arm_successes <- rep(0,2) # for temporary storage of each run for all biomarkers
+        arm_failures <- rep(0,2)
+        APT <- 0
+        repeat {n_z <- rmultinom(1, size = K, prob = rep(1, z) / z); if (all(n_z > 0)) break}
+        for (m in 1:z){
+          # n_z <- rmultinom(1, size = K, prob = rep(1, z) / z)
+          step_result <- policy(
+            pa = pa,
+            pb = pb,
+            n = n_z[m]*batch,
+            burnin = burnin,
+            batch = batch,
+            ...
+          )
+          arm_successes <- arm_successes + step_result$arm_successes
+          arm_failures <- arm_failures + step_result$arm_failures
+          APT <- APT + step_result$APT
+          
+        }
+        results[i, ] <- analyzing_results(alpha, c(pa,pb), arm_successes, arm_failures, APT)
+      }
+ 
+      average_power = mean(as.vector(na.omit(results[, 1]))) # find average power
+      expected_reward = mean(results[, 2]) # expected reward setting
+      average_reward = mean(results[, 3]) # calculate the actual real reward throughout many trials
+      average_AP = mean(results[, 4]) # find average allocation probability for the experimental arm
+      APT = results[, 5]
+      # # Empirical and normal CV of APT
+      # em_cv <- empirical_cv(APT, alpha)
+      # norm_cv <- normal_cv(APT, alpha)
+      # F1 <- ecdf(APT)
+      # # Empirical and normal FPR of APT is
+      # em_FPR <- 1 - F1(em_cv)
+      # norm_FPR <- 1 - F1(floor(norm_cv))
+      return(
+        list(
+          average_power = average_power,
+          expected_reward = expected_reward,
+          average_reward = average_reward,
+          average_AP = average_AP,
+          APT = APT
+        )
+      )
+    }
+    if (class(multi_arm) == "numeric"){
+      K <- n/batch # this is the number of blocks in the session
+      results <- array(dim = c(B, 5))
+      for (i in 1:B) {
+        arm_successes <- rep(0,length(priors))# for temporary storage of each run for all biomarkers
+        arm_failures <- rep(0,length(priors))
+        APT <- 0
+        repeat {n_z <- rmultinom(1, size = K, prob = rep(1, z) / z); if (all(n_z > 0)) break}
+        for (m in 1:z) {
+          #n_z <- rmultinom(1, size = K, prob = rep(1, z) / z)
+          # at this point of time there is no other policies like TS_contextual or TS_epsilon
+          step_result <- policy(
+            priors = priors,
+            n = n_z[m]*batch,
+            burnin = burnin,
+            batch = batch
+          )
+          arm_successes <- arm_successes + step_result$arm_successes
+          arm_failures <- arm_failures + step_result$arm_failures
+          APT <- APT + step_result$APT
+        }
+        results[i, ] <- analyzing_results(alpha, priors, arm_successes, arm_failures, APT)
+        }
+ 
+      average_power = mean(as.vector(na.omit(results[, 1]))) # Find average power based on waldscore
+      expected_reward = mean(results[, 2]) # expected reward setting
+      average_reward = mean(results[, 3]) # calculate the actual real reward throughout many trials
+      average_AP = mean(results[, 4]) # find average allocation probability for the experimental arm
+      APT = results[, 5]
+      # # Empirical and normal CV of APT
+      # em_cv <- empirical_cv(APT, alpha)
+      # norm_cv <- normal_cv(APT, alpha)
+      # F1 <- ecdf(APT)
+      # # Empirical and normal FPR of APT is
+      # em_FPR <- 1 - F1(em_cv)
+      # norm_FPR <- 1 - F1(floor(norm_cv))
+      return(
+        list(
+          average_power = average_power,
+          expected_reward = expected_reward,
+          average_reward = average_reward,
+          average_AP = average_AP,
+          APT = APT
+        )
+      )
+    }
+    else{
+      print('Error: Please double check your multi_arm input is numeric or FALSE')
+    }
+  }
+
+```
+
+```{r}
+simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0.4,
+                   n = 20,
+                   B = 100,
+                   burnin = 1,
+                   batch = 2,
+                   z = 2,
+                   multi_arm = FALSE)
+```
+
+## Section 2.4: Construction of the reporting table:
+
+### Section 2.4.1: Comparing at a specific effect size and sample size:
+
+```{r}
+# it takes in the same parameter as in before and output a comparison dataframe across different policies.
+compare_policies <-
+  function(alpha,
+           effect_size,
+           n,
+           B,
+           burnin,
+           batch,
+           z = 1,
+           multi_arm = 3,
+           priors = c(0.4,0.4,0.4), # the last one is the experimental arm, it will be changing with time
+           epsilon = 0.1,
+           c = 0.1) {
+    priors[multi_arm] <- priors[multi_arm] + effect_size
+    UR_result <-
+      simulation_n_times(alpha, UR, effect_size, n, B, burnin, batch, multi_arm = FALSE, z, priors = priors)
+    UR_multi_arm_result <-
+      simulation_n_times(alpha, UR_multiarm, effect_size, n, B, burnin, batch, multi_arm, z, priors = priors)
+    TS_result <-
+      simulation_n_times(alpha, TS, effect_size, n, B, burnin, batch, multi_arm = FALSE, z, priors = priors)
+    TS_multi_arm_result <-
+      simulation_n_times(alpha, TS_multiarm, effect_size, n, B, burnin, batch, multi_arm, z, priors = priors)
+    TS_epsilon_result <-
+      simulation_n_times(alpha, TS_epsilon, effect_size, n, B, burnin, batch, multi_arm = FALSE, z, priors = priors, epsilon)
+    TSPDD_result <-
+      simulation_n_times(alpha, TSPDD, effect_size, n, B, burnin, batch, multi_arm = FALSE, z, priors = priors, c)
+    
+    
+    # Create a summary table
+    summary_table <- data.frame(
+      Metric = c(
+        "Average Power",
+        "Expected Reward",
+        "Average Reward",
+        "Average AP",
+        "Empirical CV",
+        "Normal CV",
+        "Empirical FPR",
+        "Normal FPR"
+      ),
+      UR = c(
+        UR_result$average_power,
+        UR_result$expected_reward,
+        UR_result$average_reward,
+        UR_result$average_AP,
+        UR_result$em_cv,
+        UR_result$norm_cv,
+        UR_result$em_FPR,
+        UR_result$norm_FPR
+      ),
+      UR_multiarm = c(
+        UR_multi_arm_result$average_power,
+        UR_multi_arm_result$expected_reward,
+        UR_multi_arm_result$average_reward,
+        UR_multi_arm_result$average_AP,
+        UR_multi_arm_result$em_cv,
+        UR_multi_arm_result$norm_cv,
+        UR_multi_arm_result$em_FPR,
+        UR_multi_arm_result$norm_FPR
+      ),
+      TS = c(
+        TS_result$average_power,
+        TS_result$expected_reward,
+        TS_result$average_reward,
+        TS_result$average_AP,
+        TS_result$em_cv,
+        TS_result$norm_cv,
+        TS_result$em_FPR,
+        TS_result$norm_FPR
+      ),
+      TS_multiarm = c(
+        TS_multi_arm_result$average_power,
+        TS_multi_arm_result$expected_reward,
+        TS_multi_arm_result$average_reward,
+        TS_multi_arm_result$average_AP,
+        TS_multi_arm_result$em_cv,
+        TS_multi_arm_result$norm_cv,
+        TS_multi_arm_result$em_FPR,
+        TS_multi_arm_result$norm_FPR
+      ),
+      TS_epsilon = c(
+        TS_epsilon_result$average_power,
+        TS_epsilon_result$expected_reward,
+        TS_epsilon_result$average_reward,
+        TS_epsilon_result$average_AP,
+        TS_epsilon_result$em_cv,
+        TS_epsilon_result$norm_cv,
+        TS_epsilon_result$em_FPR,
+        TS_epsilon_result$norm_FPR
+      ),
+      TSPDD = c(
+        TSPDD_result$average_power,
+        TSPDD_result$expected_reward,
+        TSPDD_result$average_reward,
+        TSPDD_result$average_AP,
+        TSPDD_result$em_cv,
+        TSPDD_result$norm_cv,
+        TSPDD_result$em_FPR,
+        TSPDD_result$norm_FPR
+      )
+    )
+    
+    return(summary_table)
+}
+```
+
+```{r}
+compare_policies(alpha = 0.05,
+                 effect_size = 0.4,
+                 n = 100,
+                 B = 1000,
+                 burnin = 1,
+                 batch = 2,
+                 z = 1,
+                 multi_arm = 3,
+                 priors = c(0.05,0.4, 0.4))
+```
+
+### Section 2.4.2: Comparing at a range of effect size and sample size:
+
+```{r}
+# notice that here the input of the effect_sizes is a list, all the others remain the same, this is a helper function that I created for easy comparison
+compare_effect_sizes <- 
+  function(alpha,
+           effect_sizes,
+           n,
+           B,
+           burnin,
+           batch,
+           z = 1,
+           multi_arm = 3, # setting default for 3-arm cases comparison
+           priors = c(0.4,0.4,0.4), # the last one is the experimental arm, it will be changing with time
+           epsilon = 0.1, # setting default
+           c = 0.1) {
+    UR_avg_reward <- c()
+    UR_multiarm_avg_reward <-c()
+    TS_avg_reward <- c()
+    TS_multiarm_avg_reward <-c()
+    TS_epsilon_avg_reward <- c()
+    TSPDD_avg_reward <- c()
+    
+    UR_power <- c()
+    UR_multiarm_power <- c()
+    TS_power <- c()
+    TS_multiarm_power <- c()
+    TS_epsilon_power <- c()
+    TSPDD_power <- c()
+    
+    # Assuming allocation probability is represented by Average AP
+    UR_alloc_prob <- c()
+    UR_multiarm_alloc_prob <- c()
+    TS_alloc_prob <- c()
+    TS_multiarm_alloc_prob <- c()
+    TS_epsilon_alloc_prob <- c()
+    TSPDD_alloc_prob <- c()
+    
+    for (effect_size in effect_sizes){
+      result <- compare_policies(alpha = alpha,
+                                 effect_size = effect_size, 
+                                 n = n,
+                                 B = B,
+                                 burnin = burnin,
+                                 batch = batch,
+                                 z = z,
+                                 multi_arm = multi_arm,
+                                 priors = priors,
+                                 epsilon = epsilon,
+                                 c = c)
+      # avg reward construction
+      UR_avg_reward <- c(UR_avg_reward, sprintf("%.2f", result$UR[3]))
+      UR_multiarm_avg_reward <- c(UR_multiarm_avg_reward, sprintf("%.2f", result$UR_multiarm[3]) )
+      TS_avg_reward <- c(TS_avg_reward, sprintf("%.2f", result$TS[3]))
+      TS_multiarm_avg_reward <- c(TS_multiarm_avg_reward, sprintf("%.2f", result$TS_multiarm[3]))
+      TS_epsilon_avg_reward <- c(TS_epsilon_avg_reward, sprintf("%.2f", result$TS_epsilon[3]))
+      TSPDD_avg_reward <- c(TSPDD_avg_reward, sprintf("%.2f", result$TSPDD[3]))
+      
+      # avg power construction
+      UR_power <- c(UR_power, sprintf("%.2f", result$UR[1]))
+      UR_multiarm_power <- c(UR_multiarm_power, sprintf("%.2f", result$UR_multiarm[1]))
+      TS_power <- c(TS_power, sprintf("%.2f", result$TS[1]))
+      TS_multiarm_power <- c(TS_multiarm_power, sprintf("%.2f", result$TS_multiarm[1]))
+      TS_epsilon_power <- c(TS_epsilon_power, sprintf("%.2f", result$TS_epsilon[1]))
+      TSPDD_power <- c(TSPDD_power, sprintf("%.2f", result$TSPDD[1]))
+      
+      # avg allocation probability construction
+      UR_alloc_prob <- c(UR_alloc_prob, sprintf("%.2f", result$UR[4]))
+      UR_multiarm_alloc_prob <- c(UR_multiarm_alloc_prob, sprintf("%.2f", result$UR_multiarm[4]))
+      TS_alloc_prob <- c(TS_alloc_prob, sprintf("%.2f", result$TS[4]))
+      TS_multiarm_alloc_prob <- c(TS_multiarm_alloc_prob, sprintf("%.2f", result$TS_multiarm[4]))
+      TS_epsilon_alloc_prob <- c(TS_epsilon_alloc_prob, sprintf("%.2f", result$TS_epsilon[4]))
+      TSPDD_alloc_prob <- c(TSPDD_alloc_prob, sprintf("%.2f", result$TSPDD[4]))
+    }
+    final_summary_table <- data.frame(
+      Metric = c("Average Reward", 
+                 "Power",
+                 "Allocation Probability"),
+      UR = c(
+        paste(UR_avg_reward, collapse = " | "),
+        paste(UR_power, collapse = " | "),
+        paste(UR_alloc_prob, collapse = " | ")
+      ),
+      UR_multiarm = c(
+        paste(UR_multiarm_avg_reward, collapse = ' | '),
+        paste(UR_multiarm_power, collapse = ' | '),
+        paste(UR_multiarm_alloc_prob, collapse = ' | ')
+      ),
+      TS = c(
+        paste(TS_avg_reward, collapse = " | "),
+        paste(TS_power, collapse = " | "),
+        paste(TS_alloc_prob, collapse = " | ")
+      ),
+      TS_multiarm = c(
+        paste(TS_multiarm_avg_reward, collapse = ' | '),
+        paste(TS_multiarm_power, collapse = ' | '),
+        paste(TS_multiarm_alloc_prob, collapse = ' | ')
+      ),
+      TS_epsilon = c(
+        paste(TS_epsilon_avg_reward, collapse = " | "),
+        paste(TS_epsilon_power, collapse = " | "),
+        paste(TS_epsilon_alloc_prob, collapse = " | ")
+      ),
+      TSPDD = c(
+        paste(TSPDD_avg_reward, collapse = " | "),
+        paste(TSPDD_power, collapse = " | "),
+        paste(TSPDD_alloc_prob, collapse = " | ")
+      ))
+    
+    return(final_summary_table)
+  }
+```
+
+```{r}
+#demo
+compare_effect_sizes(alpha = 0.05,
+                 effect_sizes = c(0.1,0.2,0.3),
+                 n = 100,
+                 B = 100,
+                 burnin = 1,
+                 batch = 2,
+                 z = 2,
+                 multi_arm = 3,
+                 priors = c(0.05,0.5, 0.5))
+```
+
+# Section 3: Simulations:
+
+## Section 3.1: Global Settings
+
+In this section we will provide some unified parameters across different simulations:
+
+```{r}
+# let's make this a function
+set.seed(0) # for results to be replicable
+#calculate power and reward in case p0 < p1
+alpha <- 0.05 # rejection region
+effect_size <- 0 # by default effect size is 0: no difference between arms | effect size is 0.05-0.1: Intervention is of relatively small or marginal effect | effect size is 0.1-0.2: Medium or smal effect | effect size is 0.2-0.3+: relatively large effectt between interventions
+n <- 100 # sample_size(total number of trials in one simulation)
+burnin <- n* 0.1 # make by default the burin size is 10% of sample size
+z = 1 # by default 1 biomarker group
+multi_arm <- 3 #by default 3-arm case
+priors <- c(0.05, 0.4, 0.4)
+B <- 1000 # number of simulations
+batch <-  2 # batch_size
+```
+
+## Section 3.2: Sample size n=50
+
+```{r}
+n <- 50 # notice that this will change the gloabl setting of parameters
+```
+
+### Section 3.2.1: Effect size = 0.0
+
+```{r}
+compare_policies(alpha,effect_size = 0.0, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.2 Effect size = 0.05
+
+```{r}
+compare_policies(alpha,effect_size = 0.05, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.3: Effect size = 0.1
+
+```{r}
+compare_policies(alpha,effect_size = 0.1, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.4: Effect size = 0.2
+
+```{r}
+compare_policies(alpha,effect_size = 0.2, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.5: Effect size = 0.3
+
+```{r}
+compare_policies(alpha,effect_size = 0.3, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.6: Effect size = 0.4
+
+```{r}
+compare_policies(alpha,effect_size = 0.4, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.7: Effect size = 0.5
+
+```{r}
+compare_policies(alpha,effect_size = 0.5, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.8: Summary Table for sample size = 50, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n<-50
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_50 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.9: Summary Table for sample size = 100, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,etc. priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n <- 100
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_100 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.10: Summary Table for sample size = 200, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,etc. priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n <- 200
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_200 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.11: Summary Table for sample size = 300, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,etc. priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n <- 300
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_300 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.12: Summary Table for sample size = 20, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,etc. priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n <- 20
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_20 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+### Section 3.2.13: Summary Table for sample size = 500, effect_size = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,etc. priors(0.05, 0.4, 0.4+ effect_size) for 3-arms
+
+```{r}
+set.seed(1)
+n <- 500
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_500 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+```
+
+## Section 3.3: joining the table in a long format
+
+```{r}
+# Step 1: renaming the row names with corresponding sample size
+rownames(n_20) <- paste(rownames(n_20), "(n=20)")
+rownames(n_50) <- paste(rownames(n_50), "(n=50)")
+rownames(n_100) <- paste(rownames(n_100), "(n=100)")
+rownames(n_200) <- paste(rownames(n_200), "(n=200)")
+rownames(n_300) <- paste(rownames(n_300), "(n=300)")
+rownames(n_500) <- paste(rownames(n_500), "(n=500)")
+```
+
+```{r}
+library(stringr) # need to install this pacakage if needed
+# Step 2: Concatenate these tables vertically
+merged_table <- rbind(n_20,n_50, n_100, n_200, n_300, n_500)
+
+# Separate metrics and sample sizes from the row names
+metrics <- gsub("\\(.*", "", rownames(merged_table))
+  sample_sizes <- gsub(".*\\(", "", gsub("\\).*", "", rownames(merged_table)))
+  
+  # Create a data.frame to hold the metrics, sample sizes, and row indices
+ordering_df <- data.frame(
+    Metric = metrics,
+    Sample_Size = sample_sizes,
+    Row_Index = 1:nrow(merged_table))
+ordering_df$Sample_Size <- as.numeric(str_extract(sample_sizes, "\\d+"))
+  
+# Order the data.frame first by Metric, then by Sample_Size
+ordering_df <- ordering_df[order(ordering_df$Metric, ordering_df$Sample_Size), ]
+
+# Rearrange the rows of merged_table based on the ordered row indices
+merged_table <- merged_table[ordering_df$Row_Index, ]
+```
+
+### Section 3.4: Plotting the trend plot with respect to effect size for each metric
+
+#### Section 3.4.0 Defining the reward graphing tool:
+
+```{r, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+#' graphing_tool - graphical analysis on different metrics like reward, power, or allocation probabilities
+#'
+#' Takes the below input
+
+#' @param merged_table - merged tables on above sample sizes
+#' @metric the metric we want to see grpahical interpretation
+#' @policies the polcies we want to investigate on
+#' @return the graph of the trend for selected policis 
+graphing_tool <- function(merged_table,
+                          metric, 
+                          policies = c()) {
+  # Step 1: Filter the merged_table
+  filtered_data <- merged_table |> filter(Metric == metric)
+  
+  # Step 2.1 Creating a helper function for splitting the data:
+  split_and_convert <- function(value) {
+    as.numeric(str_split(value, " \\| ")[[1]])
+  }
+  
+  # Step 2.2: Split the values in the Value column into a numeric vector
+  metric_values_UR <- c(sapply(filtered_data$UR, split_and_convert))
+  metric_values_UR_multiarm <- c(sapply(filtered_data$UR_multiarm, split_and_convert))
+  metric_values_TS <- c(sapply(filtered_data$TS, split_and_convert))
+  metric_values_TS_multiarm <- c(sapply(filtered_data$TS_multiarm, split_and_convert))
+  metric_values_TS_epsilon <- c(sapply(filtered_data$TS_epsilon, split_and_convert))
+  metric_values_TSPDD <- c(sapply(filtered_data$TSPDD, split_and_convert))
+  
+  
+  
+  # Step 3: Create a data frame for plotting
+  plot_data <- data.frame(
+    expand_grid(
+      Policy = c("UR", "UR_multiarm", "TS", "TS_multiarm", "TS_epsilon", "TSPDD"),
+      Sample_size = c(20, 50, 100, 200, 300, 500),
+      Effect_Size = effect_sizes
+    ) %>% bind_cols(
+      Metric = c(
+        metric_values_UR,
+        metric_values_UR_multiarm,
+        metric_values_TS,
+        metric_values_TS_multiarm,
+        metric_values_TS_epsilon,
+        metric_values_TSPDD
+      )
+    )
+  )
+  
+  # Step 4: Use ggplot2 to plot the trend
+  p <- ggplot(plot_data %>% filter(Policy %in% policies),
+              aes(x = Effect_Size, y = Metric, color = Policy)) +
+    geom_point(size = 0.5, alpha = 0.7) + geom_line(alpha = 0.7) +
+    facet_wrap( ~ Sample_size) +
+    labs(title = paste("Trend of ", metric ," across Effect Sizes and Sample Sizes"),
+         x = "Effect Size",
+         y = metric) +
+    theme_minimal()
+  
+  return(p)
+}
+```
+
+#### Section 3.4.1 For Reward: Prior (0.05, 0.4, 0.4+effect size)
+
+```{r}
+graphing_tool(merged_table,
+              'Average Reward',
+              c('UR_multiarm', "TS_multiarm"))
+```
+
+#### Section 3.4.2 For Power: Prior (0.05, 0.4, 0.4+effect size)
+
+```{r}
+graphing_tool(merged_table,
+              'Power',
+               c('UR_multiarm', "TS_multiarm"))
+
+# change it from 0.5, 0.5 +effect size
+# the signs of the wald z test might be lower as well
+
+# look into how to calculate the proportion or sample proportion to calculate the error bar for the power (do a bit of literature review )
+```
+
+#### Section 3.5.1: For Reward: Prior (0.4, 0.4, 0.4+effect size)
+
+```{r}
+priors <- c(0.4,0.4,0.4)
+n<-50
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_50 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 100
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_100 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 200
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_200 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 300
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_300 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 20
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_20 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 500
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_500 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+rownames(n_20) <- paste(rownames(n_20), "(n=20)")
+rownames(n_50) <- paste(rownames(n_50), "(n=50)")
+rownames(n_100) <- paste(rownames(n_100), "(n=100)")
+rownames(n_200) <- paste(rownames(n_200), "(n=200)")
+rownames(n_300) <- paste(rownames(n_300), "(n=300)")
+rownames(n_500) <- paste(rownames(n_500), "(n=500)")
+
+merged_table <- rbind(n_20,n_50, n_100, n_200, n_300, n_500)
+
+metrics <- gsub("\\(.*", "", rownames(merged_table))
+  sample_sizes <- gsub(".*\\(", "", gsub("\\).*", "", rownames(merged_table)))
+  
+  # Create a data.frame to hold the metrics, sample sizes, and row indices
+ordering_df <- data.frame(
+    Metric = metrics,
+    Sample_Size = sample_sizes,
+    Row_Index = 1:nrow(merged_table))
+ordering_df$Sample_Size <- as.numeric(str_extract(sample_sizes, "\\d+"))
+  
+# Order the data.frame first by Metric, then by Sample_Size
+ordering_df <- ordering_df[order(ordering_df$Metric, ordering_df$Sample_Size), ]
+
+# Rearrange the rows of merged_table based on the ordered row indices
+merged_table <- merged_table[ordering_df$Row_Index, ]
+
+```
+
+```{r}
+graphing_tool(merged_table,
+              'Average Reward',
+              c('UR', "TS", "TS_epsilon", "TSPDD"))
+```
+
+```{r}
+graphing_tool(merged_table,
+              'Power',
+              c('UR', "TS", "TS_epsilon", "TSPDD"))
+```
+
+# Section 4: Comparison of AP test statistics
+
+## Section 4.1 Comparing at z = 1,2 with 0 effect size, 2-arm:
+
+### Section 4.1.1 20 samples with batch_size = 2
+
+```{r}
+set.seed(1) # for reproducibility
+n <- 20
+result_1 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+AP_z1 <- result_1$APT
+
+result_2 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0.2,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+AP_z2 <- result_2$APT
+
+result_3 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0.3,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+
+AP_z3 <- result_3$APT
+# Load the necessary library
+library(ggplot2)
+
+# Combine the data
+AP_data <- data.frame(
+  value = c(AP_z1, AP_z2, AP_z3),
+  group = factor(rep(c("p1 = p2 = 0.5", "p1 = 0.5, p2 = 0.7", "p1 = 0.5, p2 = 0.8"), times = c(length(AP_z1), length(AP_z2), length(AP_z3))))
+)
+
+AP_data$group <- factor(AP_data$group, levels = c("p1 = p2 = 0.5", "p1 = 0.5, p2 = 0.7", "p1 = 0.5, p2 = 0.8"))
+
+AP_data |>
+  ggplot(aes(x = value), fill = group) +
+  geom_histogram(binwidth = 1, aes(y = ..density..),color = "black", alpha = 0.5, position = 'identity')+
+  facet_wrap(~group)+
+  theme_bw()
+
+```
+
+Finding FPR and Power:
+
+```{r}
+cv <- empirical_cv(AP_z1, 0.05) - 2
+FPR <- 1 - ecdf(AP_z1)(cv)
+Power_02 <- 1 - ecdf(AP_z2)(cv)
+Power_03 <- 1 - ecdf(AP_z3)(cv)
+
+paste('reward over time for each effect size 0, 0.2, 0.3 is',
+      result_1$average_reward,
+      result_2$average_reward, 
+      result_3$average_reward)
+paste('Correct Allocation time for each effect size 0, 0.2, 0.3 is',
+      result_1$average_AP,
+      result_2$average_AP,
+      result_3$average_AP)
+paste('Average Wald Power for each effect size 0, 0.2, 0.3 is',
+      result_1$average_power,
+      result_2$average_power,
+      result_3$average_power)
+paste('Empirical CV is at', cv)
+paste('Empirical FPR is at', FPR)
+paste('Empirical Power with 0.2 effect size is', Power_02)
+paste('Empirical Power with 0.3 effect size is', Power_03)
+```
+
+### =Section 4.1.1 100 samples with batch_size = 2
+
+```{r}
+set.seed(1) # for reproducibility
+n <- 100
+
+result_1 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+AP_z1 <- result_1$APT
+
+result_2 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0.2,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+AP_z2 <- result_2$APT
+
+result_3 <- simulation_n_times(alpha = 0.05,
+                   policy = TS,
+                   effect_size = 0.3,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)
+
+AP_z3 <- result_3$APT
+# Load the necessary library
+library(ggplot2)
+
+# Combine the data
+AP_data <- data.frame(
+  value = c(AP_z1, AP_z2, AP_z3),
+  group = factor(rep(c("p1 = p2 = 0.5", "p1 = 0.5, p2 = 0.7", "p1 = 0.5, p2 = 0.8"), times = c(length(AP_z1), length(AP_z2), length(AP_z3))))
+)
+
+AP_data$group <- factor(AP_data$group, levels = c("p1 = p2 = 0.5", "p1 = 0.5, p2 = 0.7", "p1 = 0.5, p2 = 0.8"))
+
+AP_data |>
+  ggplot(aes(x = value), fill = group) +
+  geom_histogram(binwidth = 1, aes(y = ..density..),color = "black", alpha = 0.5, position = 'identity')+
+  facet_wrap(~group)+
+  theme_bw()
+
+```
+
+```{r}
+cv <- empirical_cv(AP_z1, 0.05) -4
+FPR <- 1 - ecdf(AP_z1)(cv)
+Power_02 <- 1 - ecdf(AP_z2)(cv)
+Power_03 <- 1 - ecdf(AP_z3)(cv)
+
+paste('reward over time for each effect size 0, 0.2, 0.3 is',
+      result_1$average_reward,
+      result_2$average_reward, 
+      result_3$average_reward)
+paste('Correct Allocation time for each effect size 0, 0.2, 0.3 is',
+      result_1$average_AP,
+      result_2$average_AP,
+      result_3$average_AP)
+paste('Average Wald Power for each effect size 0, 0.2, 0.3 is',
+      result_1$average_power,
+      result_2$average_power,
+      result_3$average_power)
+paste('Empirical CV is at', cv)
+paste('Empirical FPR is at', FPR)
+paste('Empirical Power with 0.2 effect size is', Power_02)
+paste('Empirical Power with 0.3 effect size is', Power_03)
+```
+
+### Comparisons across different sample sizes and different policies:
+
+#### Comparison of Reward
+
+```{r}
+set.seed(1)
+priors <- c(0.4,0.4,0.4)
+
+n <- 20
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_20 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+
+n<-50
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_50 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+n <- 100
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+n_100 <- compare_effect_sizes(alpha,effect_sizes = effect_sizes, n, B,burnin,batch,z, multi_arm, priors, epsilon=0.1,c=0.1)
+
+
+rownames(n_20) <- paste(rownames(n_20), "(n=20)")
+rownames(n_50) <- paste(rownames(n_50), "(n=50)")
+rownames(n_100) <- paste(rownames(n_100), "(n=100)")
+
+
+merged_table <- rbind(n_20,n_50, n_100)
+
+metrics <- gsub("\\(.*", "", rownames(merged_table))
+  sample_sizes <- gsub(".*\\(", "", gsub("\\).*", "", rownames(merged_table)))
+  
+  # Create a data.frame to hold the metrics, sample sizes, and row indices
+ordering_df <- data.frame(
+    Metric = metrics,
+    Sample_Size = sample_sizes,
+    Row_Index = 1:nrow(merged_table))
+ordering_df$Sample_Size <- as.numeric(str_extract(sample_sizes, "\\d+"))
+  
+# Order the data.frame first by Metric, then by Sample_Size
+ordering_df <- ordering_df[order(ordering_df$Metric, ordering_df$Sample_Size), ]
+
+# Rearrange the rows of merged_table based on the ordered row indices
+merged_table <- merged_table[ordering_df$Row_Index, ]
+```
+
+```{r}
+graphing_tool <- function(merged_table,
+                          metric, 
+                          policies = c()) {
+  # Step 1: Filter the merged_table
+  filtered_data <- merged_table |> filter(Metric == metric)
+  
+  # Step 2.1 Creating a helper function for splitting the data:
+  split_and_convert <- function(value) {
+    as.numeric(str_split(value, " \\| ")[[1]])
+  }
+  
+  # Step 2.2: Split the values in the Value column into a numeric vector
+  metric_values_UR <- c(sapply(filtered_data$UR, split_and_convert))
+  metric_values_UR_multiarm <- c(sapply(filtered_data$UR_multiarm, split_and_convert))
+  metric_values_TS <- c(sapply(filtered_data$TS, split_and_convert))
+  metric_values_TS_multiarm <- c(sapply(filtered_data$TS_multiarm, split_and_convert))
+  metric_values_TS_epsilon <- c(sapply(filtered_data$TS_epsilon, split_and_convert))
+  metric_values_TSPDD <- c(sapply(filtered_data$TSPDD, split_and_convert))
+  
+  
+  
+  # Step 3: Create a data frame for plotting
+  plot_data <- data.frame(
+    expand_grid(
+      Policy = c("UR", "UR_multiarm", "TS", "TS_multiarm", "TS_epsilon", "TSPDD"),
+      Sample_size = c(20, 50, 100),
+      Effect_Size = effect_sizes
+    ) %>% bind_cols(
+      Metric = c(
+        metric_values_UR,
+        metric_values_UR_multiarm,
+        metric_values_TS,
+        metric_values_TS_multiarm,
+        metric_values_TS_epsilon,
+        metric_values_TSPDD
+      )
+    )
+  )
+  
+  # Step 4: Use ggplot2 to plot the trend
+  p <- ggplot(plot_data %>% filter(Policy %in% policies),
+              aes(x = Effect_Size, y = Metric, color = Policy)) +
+    geom_point(size = 0.5, alpha = 0.7) + geom_line(alpha = 0.7) +
+    facet_wrap( ~ Sample_size) +
+    labs(title = paste("Trend of ", metric ," across Effect Sizes and Sample Sizes"),
+         x = "Effect Size",
+         y = metric) +
+    theme_minimal()
+  
+  return(p)
+}
+```
+
+```{r}
+graphing_tool(merged_table,
+              'Average Reward',
+              c('UR', "TS", "TS_epsilon", "TSPDD"))
+```
+
+#### Comparison of Correct Allocation Rate
+
+```{r}
+set.seed(1)
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR", "TS", "TS_epsilon", "TSPDD")
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  AP = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+
+for (n in ns){
+  for (effect_size in effect_sizes){
+    for (policy in policies){
+      temp <- data.frame(
+        n = n,
+        effect_size = effect_size,
+        policy = policy,
+        AP = simulation_n_times(alpha = 0.05,
+                   policy = get(policy, envir = .GlobalEnv),
+                   effect_size = effect_size,
+                   n = n,
+                   B = 1000,
+                   burnin = 1,
+                   batch = 2)$average_AP,
+        stringsAsFactors = FALSE
+      )
+      result <- rbind(result, temp)
+    }
+  }
+}
+
+
+
+```
+
+```{r}
+plot <- ggplot(result, aes(x = effect_size, y = AP, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) + geom_line(alpha = 0.7) +  # or geom_line() if you prefer lines
+  facet_wrap(~ n, scales = "free") +  # Added scales = "free" to allow different scales for different facets
+  labs(
+    title = "Correct Allocation with respect to Effect Size",
+    x = "Effect Size",
+    y = "Correct Allocation Ratio"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
+
+#### Comparison of Wald-Z Power
+
+```{r}
+graphing_tool(merged_table,
+              'Power',
+              c('UR', "TS", "TS_epsilon", "TSPDD"))
+```
+
+#### Comparison of AP Power
+
+```{r}
+set.seed(1)
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR", "TS", "TS_epsilon", "TSPDD")
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  power = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+cv <- list('UR' = 0, 'TS' = 0, 'TS_epsilon' = 0, 'TSPDD' = 0)
+
+for (n in ns){
+  for (effect_size in effect_sizes) {
+    for (policy in policies) {
+      APT <- simulation_n_times(
+        alpha = 0.05,
+        policy = get(policy, envir = .GlobalEnv),
+        effect_size = effect_size,
+        n = n,
+        B = 1000,
+        burnin = 1,
+        batch = 2
+      )$APT
+      if (effect_size == 0) {
+        cv[policy] <- empirical_cv(APT, 0.05) - 1
+      }
+      temp <- data.frame(
+        n = n,
+        effect_size = effect_size,
+        policy = policy,
+        power = 1 - ecdf(APT)(cv[policy]),
+        stringsAsFactors = FALSE
+      )
+      result <- rbind(result, temp)
+    }
+  }
+}
+```
+
+```{r}
+plot <- ggplot(result, aes(x = effect_size, y = power, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) + geom_line(alpha = 0.7) +  # or geom_line() if you prefer lines
+  facet_wrap(~ n) +  # Added scales = "free" to allow different scales for different facets
+  labs(
+    title = "AP Power with respect to Effect Size",
+    x = "Effect Size",
+    y = "Power"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
+
+### Replication results for three arm setting (XPRIZE)
+
+#### comparing reward
+
+```{r}
+set.seed(1)
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR_multiarm", "TS_multiarm")
+
+priors <- array(c(0.05,0.4,0.4, 0.4,0.4,0.4), dim = c(2,3))
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  prior = numeric(0),
+  metric = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+
+for (n in ns) {
+  for (effect_size in effect_sizes) {
+    for (policy in policies) {
+      for (i in 1:2) {
+        prior_label <- paste("Prior", i)
+        temp <- data.frame(
+          n = n,
+          effect_size = effect_size,
+          policy = policy,
+          prior = prior_label,
+          metric = simulation_n_times(
+            alpha = 0.05,
+            policy = get(policy, envir = .GlobalEnv),
+            effect_size = effect_size,
+            n = n,
+            B = 1000,
+            burnin = 1,
+            batch = 2,
+            multi_arm = 3,
+            priors = c(priors[i,1],priors[i,2], priors[i,3]+effect_size)
+          )$average_reward,
+          stringsAsFactors = FALSE
+        )
+        result <- rbind(result, temp)
+      }
+    }
+  }
+}
+```
+
+```{r}
+result$prior <- factor(result$prior, labels = c("p1 << p2, p3 = 0.4 +", 
+                                                "p1 = p2, p3 = 0.4 +"))
+result$n <- factor(result$n, labels = c('n = 20', 'n = 50', 'n = 100'))
+# Create the plot
+plot <- ggplot(result, aes(x = effect_size, y = metric, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) +
+  geom_line(alpha = 0.7) +
+  facet_grid(rows = vars(prior), cols = vars(n), scales = "free") +
+  labs(
+    title = "Average Reward with respect to Effect Size",
+    x = "Effect Size",
+    y = "Average Reward"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
+
+#### Comparing correct ratio:
+
+```{r}
+set.seed(1)
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR_multiarm", "TS_multiarm")
+
+priors <- array(c(0.05,0.4,0.4, 0.4,0.4,0.4), dim = c(2,3))
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  prior = numeric(0),
+  metric = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+
+for (n in ns) {
+  for (effect_size in effect_sizes) {
+    for (policy in policies) {
+      for (i in 1:2) {
+        prior_label <- paste("Prior", i)
+        temp <- data.frame(
+          n = n,
+          effect_size = effect_size,
+          policy = policy,
+          prior = prior_label,
+          metric = simulation_n_times(
+            alpha = 0.05,
+            policy = get(policy, envir = .GlobalEnv),
+            effect_size = effect_size,
+            n = n,
+            B = 1000,
+            burnin = 1,
+            batch = 2,
+            multi_arm = 3,
+            priors = c(priors[i,1],priors[i,2], priors[i,3]+effect_size)
+          )$average_AP ,
+          stringsAsFactors = FALSE
+        )
+        result <- rbind(result, temp)
+      }
+    }
+  }
+}
+```
+
+```{r}
+result$prior <- factor(result$prior, labels = c("p1 << p2, p3 = 0.4 +", 
+                                                "p1 = p2, p3 = 0.4 +"))
+result$n <- factor(result$n, labels = c('n = 20', 'n = 50', 'n = 100'))
+# Create the plot
+plot <- ggplot(result, aes(x = effect_size, y = metric, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) +
+  geom_line(alpha = 0.7) +
+  facet_grid(rows = vars(prior), cols = vars(n), scales = "free") +
+  labs(
+    title = "Correct Allocation with respect to Effect Size",
+    x = "Effect Size",
+    y = "Correct Allocation Ratio"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
+
+#### Comparing wald Power
+
+```{r}
+set.seed(1)
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR_multiarm", "TS_multiarm")
+
+priors <- array(c(0.05,0.4,0.4, 0.4,0.4,0.4), dim = c(2,3))
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  prior = numeric(0),
+  metric = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+
+for (n in ns) {
+  for (effect_size in effect_sizes) {
+    for (policy in policies) {
+      for (i in 1:2) {
+        prior_label <- paste("Prior", i)
+        temp <- data.frame(
+          n = n,
+          effect_size = effect_size,
+          policy = policy,
+          prior = prior_label,
+          metric = simulation_n_times(
+            alpha = 0.05,
+            policy = get(policy, envir = .GlobalEnv),
+            effect_size = effect_size,
+            n = n,
+            B = 1000,
+            burnin = 1,
+            batch = 2,
+            multi_arm = 3,
+            priors = c(priors[i,1],priors[i,2], priors[i,3]+effect_size)
+          )$average_power ,
+          stringsAsFactors = FALSE
+        )
+        result <- rbind(result, temp)
+      }
+    }
+  }
+}
+```
+
+```{r}
+result$prior <- factor(result$prior, labels = c("p1 << p2, p3 = 0.4 +", 
+                                                "p1 = p2, p3 = 0.4 +"))
+result$n <- factor(result$n, labels = c('n = 20', 'n = 50', 'n = 100'))
+# Create the plot
+plot <- ggplot(result, aes(x = effect_size, y = metric, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) +
+  geom_line(alpha = 0.7) +
+  facet_grid(rows = vars(prior), cols = vars(n), scales = "free") +
+  labs(
+    title = "Trend of Wald-Z test Power with respect to Effect Size",
+    x = "Effect Size",
+    y = "Power"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
+
+#### comparing AP power
+
+```{r}
+
+ns <- c(20,50,100)
+
+effect_sizes <-
+  c(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5)
+
+policies <- c("UR_multiarm", "TS_multiarm")
+
+priors <- array(c(0.05,0.4,0.4, 0.4,0.4,0.4), dim = c(2,3))
+
+result <- data.frame(
+  n = numeric(0),
+  effect_size = numeric(0),
+  policy = numeric(0),
+  prior = numeric(0),
+  power = numeric(0),
+  stringsAsFactors = FALSE
+)
+
+cv <- list('UR_multiarm' = c(0,0), 'TS_multiarm' = c(0,0))
+
+for (n in ns) {
+  for (effect_size in effect_sizes) {
+    for (policy in policies) {
+      for (i in 1:2) {
+        prior_label <- paste("Prior", i)
+        APT <- simulation_n_times(
+          alpha = 0.05,
+          policy = get(policy, envir = .GlobalEnv),
+          effect_size = effect_size,
+          n = n,
+          B = 1000,
+          burnin = 1,
+          batch = 2,
+          multi_arm = 3,
+          priors = priors[i,]
+        )$APT
+        if (effect_size == 0) {
+          cv[[policy]][i] <- empirical_cv(APT, 0.05) - 1
+          print(cv)
+        }
+        temp <- data.frame(
+          n = n,
+          effect_size = effect_size,
+          policy = policy,
+          prior = prior_label,
+          power = 1 - ecdf(APT)(cv[[policy]][i]),
+          stringsAsFactors = FALSE
+        )
+        result <- rbind(result, temp)
+      }
+    }
+  }
+}
+```
+
+```{r}
+result$prior <- factor(result$prior, labels = c("p1 << p2, p3 = 0.4 +", 
+                                                "p1 = p2, p3 = 0.4 +"))
+result$n <- factor(result$n, labels = c('n = 20', 'n = 50', 'n = 100'))
+# Create the plot
+plot <- ggplot(result, aes(x = effect_size, y = power, color = policy)) +
+  geom_point(size = 0.5, alpha = 0.7) +
+  geom_line(alpha = 0.7) +
+  facet_grid(rows = vars(prior), cols = vars(n), scales = "free") +
+  labs(
+    title = "Trend of AP test Power with respect to Effect Size",
+    x = "Effect Size",
+    y = "Power"
+  ) +
+  theme_minimal()
+
+# Display the plot
+print(plot)
+```
